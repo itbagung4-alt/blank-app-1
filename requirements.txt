@@ -1,1 +1,213 @@
 streamlit
+pubchempy
+rdkit
+py3Dmol
+stmol
+ipython_genutils
+
+### 2. Skrip Utama `app.py`
+Ini adalah logika inti aplikasi Anda. Simpan kode ini sebagai `app.py`.
+
+```python
+import streamlit as st
+import pubchempy as pcp
+from rdkit import Chem
+from rdkit.Chem import AllChem, Draw
+from rdkit.Chem.rdChemReactions import ReactionFromSmarts
+import py3Dmol
+from stmol import showmol
+import random
+
+# --- KONFIGURASI HALAMAN ---
+st.set_page_config(page_title="Tata Penamaan Senyawa Organik", layout="wide")
+
+# --- DATABASE PEMETAAN BAHASA (Mapping Sederhana) ---
+indo_to_eng = {
+    "metana": "methane", "etana": "ethane", "propana": "propane", "butana": "butane",
+    "pentana": "pentane", "heksana": "hexane", "heptana": "heptane", "oktana": "octane",
+    "etanol": "ethanol", "metanol": "methanol", "asam asetat": "acetic acid",
+    "benzena": "benzene", "etilena": "ethylene", "asetilena": "acetylene",
+    "kloroform": "chloroform", "glukosa": "glucose", "fruktosa": "fructose",
+    "propanon": "propanone", "aseton": "acetone"
+}
+
+def translate_name(name):
+    name_lower = name.lower().strip()
+    # Ganti akhiran umum Indonesia ke Inggris
+    rules = [
+        (" oic acid", "oic acid"), ("asam ", ""), ("at", "ate"),
+        ("ol", "ol"), ("al", "al"), ("on", "one"), ("ena", "ene"), ("una", "yne")
+    ]
+    
+    if name_lower in indo_to_eng:
+        return indo_to_eng[name_lower]
+    
+    # Heuristik sederhana jika tidak ada di map
+    translated = name_lower
+    if translated.startswith("asam "):
+        translated = translated.replace("asam ", "") + " acid"
+    translated = translated.replace("at", "ate").replace("ena", "ene").replace("una", "yne").replace("on", "one")
+    return translated
+
+# --- FUNGSI RENDER 3D (MOLYMOD STYLE) ---
+def render_mol(smiles, style='stick'):
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    AllChem.EmbedMolecule(mol)
+    mblock = Chem.MolToMolBlock(mol)
+    
+    view = py3Dmol.view(width=600, height=400)
+    view.addModel(mblock, 'mol')
+    
+    if style == 'molymod':
+        view.setStyle({'stick': {'radius': 0.2}, 'sphere': {'scale': 0.3}}) # Ball and Stick
+    else:
+        view.setStyle({'stick': {}})
+    
+    view.zoomTo()
+    return view
+
+# --- MESIN REAKSI ---
+def simulate_reaction(smiles1, smiles2):
+    mol1 = Chem.MolFromSmiles(smiles1)
+    mol2 = Chem.MolFromSmiles(smiles2)
+    
+    # Contoh Aturan Reaksi: Esterifikasi (Alkohol + Asam Karboksilat)
+    # [C:1](=[O:2])-[O:3].[O:4]-[C:5] >> [C:1](=[O:2])-[O:4]-[C:5]
+    rxn_ester = ReactionFromSmarts('[CX3:1](=[OX1:2])[OX2H1:3].[OX2H1:4][CX4:5]>>[CX3:1](=[OX1:2])[OX2:4][CX4:5].[OX2H2]')
+    
+    # Halogenasi Alkene
+    rxn_halog = ReactionFromSmarts('[C:1]=[C:2].[Cl,Br,I:3][Cl,Br,I:4]>>[C:1]([3])[C:2]([4])')
+
+    results = []
+    
+    # Coba Esterifikasi
+    ps = rxn_ester.RunReactants((mol1, mol2))
+    if ps:
+        for p in ps[0]:
+            results.append({"prod": Chem.MolToSmiles(p), "type": "Esterifikasi", "desc": "Reaksi kondensasi antara asam karboksilat dan alkohol menghasilkan ester dan air."})
+            break
+            
+    # Jika tidak ada hasil, coba reaktan dibalik
+    if not results:
+        ps = rxn_ester.RunReactants((mol2, mol1))
+        if ps:
+            for p in ps[0]:
+                results.append({"prod": Chem.MolToSmiles(p), "type": "Esterifikasi", "desc": "Reaksi kondensasi antara asam karboksilat dan alkohol menghasilkan ester dan air."})
+                break
+
+    return results
+
+# --- SIDEBAR NAVIGASI ---
+st.sidebar.title("Menu Utama")
+app_mode = st.sidebar.selectbox("Pilih Modul", ["Eksplorasi Senyawa", "Laboratorium Reaksi", "Latihan Soal"])
+
+if app_mode == "Eksplorasi Senyawa":
+    st.title("🧪 Eksplorasi Senyawa Organik")
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        input_nama = st.text_input("Masukkan Nama Senyawa (IUPAC/Trivial - Indo):", "Etanol")
+        mulai = st.button("Mulai Analisis")
+    
+    if mulai:
+        eng_name = translate_name(input_nama)
+        try:
+            compounds = pcp.get_compounds(eng_name, 'name')
+            if compounds:
+                c = compounds[0]
+                st.subheader(f"Hasil Analisis: {input_nama.title()}")
+                
+                tab1, tab2 = st.tabs(["Struktur 3D", "Sifat Fisika & Kimia"])
+                
+                with tab1:
+                    st.write("**Model 3D (Molymod Style):**")
+                    showmol(render_mol(c.isomeric_smiles, style='molymod'))
+                
+                with tab2:
+                    st.write(f"- **Nama IUPAC:** {c.iupac_name}")
+                    st.write(f"- **Rumus Molekul:** {c.molecular_formula}")
+                    st.write(f"- **Berat Molekul:** {c.molecular_weight} g/mol")
+                    st.write(f"- **SMILES:** `{c.isomeric_smiles}`")
+                    st.info("Sifat kimia: Senyawa ini memiliki reaktivitas berdasarkan gugus fungsinya.")
+            else:
+                st.error("Senyawa tidak ditemukan. Coba gunakan nama IUPAC yang lebih standar.")
+        except Exception as e:
+            st.error(f"Terjadi kesalahan: {e}")
+
+elif app_mode == "Laboratorium Reaksi":
+    st.title("⚗️ Laboratorium Reaksi Virtual")
+    colA, colB = st.columns(2)
+    
+    with colA:
+        r1 = st.text_input("Senyawa 1 (Reaktan):", "Asam Asetat")
+    with colB:
+        r2 = st.text_input("Senyawa 2 (Reaktan):", "Etanol")
+        
+    if st.button("Jalankan Reaksi"):
+        n1, n2 = translate_name(r1), translate_name(r2)
+        try:
+            c1 = pcp.get_compounds(n1, 'name')[0]
+            c2 = pcp.get_compounds(n2, 'name')[0]
+            
+            reaksi_hasil = simulate_reaction(c1.isomeric_smiles, c2.isomeric_smiles)
+            
+            if reaksi_hasil:
+                res = reaksi_hasil[0]
+                st.success(f"Reaksi Terdeteksi: {res['type']}")
+                st.write(res['desc'])
+                
+                st.subheader("Produk Hasil Reaksi (3D)")
+                showmol(render_mol(res['prod'], style='molymod'))
+                
+                st.write(f"**SMILES Produk:** `{res['prod']}`")
+            else:
+                st.warning("Tidak ada reaksi teoritis sederhana yang ditemukan antara kedua senyawa ini pada database aturan kami.")
+        except:
+            st.error("Pastikan kedua nama reaktan benar.")
+
+elif app_mode == "Latihan Soal":
+    st.title("🧠 Kuis Tata Nama Organik")
+    
+    if 'quiz_data' not in st.session_state:
+        st.session_state.quiz_list = [
+            {"smiles": "CCC", "name": "propana", "desc": "Alkana rantai lurus dengan 3 karbon."},
+            {"smiles": "CC(C)C", "name": "2-metilpropana", "desc": "Alkana bercabang dengan rantai utama 3 karbon dan cabang metil di posisi 2."},
+            {"smiles": "CCO", "name": "etanol", "desc": "Alkohol dengan 2 karbon."},
+            {"smiles": "CC(=O)C", "name": "aseton", "desc": "Keton paling sederhana (propanon)."}
+        ]
+        st.session_state.current_soal = random.choice(st.session_state.quiz_list)
+
+    soal = st.session_state.current_soal
+    
+    st.write("### Tebak nama struktur berikut:")
+    # Render 2D image for quiz
+    mol = Chem.MolFromSmiles(soal['smiles'])
+    img = Draw.MolToImage(mol)
+    st.image(img, caption="Struktur Rantai")
+    
+    jawaban = st.text_input("Jawaban Anda (Nama IUPAC/Trivial Indo):")
+    
+    if st.button("Cek Jawaban"):
+        if jawaban.lower().strip() == soal['name'].lower():
+            st.balloons()
+            st.success("BENAR!")
+        else:
+            st.error(f"SALAH! Jawaban yang benar adalah: {soal['name']}")
+        
+        with st.expander("Lihat Pembahasan"):
+            st.write(f"**Penjelasan:** {soal['desc']}")
+            st.write("Struktur ini diidentifikasi berdasarkan jumlah atom karbon dan gugus fungsi yang terikat.")
+            
+    if st.button("Soal Selanjutnya"):
+        st.session_state.current_soal = random.choice(st.session_state.quiz_list)
+        st.rerun()
+
+### Instruksi Implementasi:
+1.  **GitHub:** Unggah berkas `app.py` dan `requirements.txt` ke repositori GitHub baru.
+2.  **Streamlit Cloud:** Hubungkan repositori tersebut ke [Streamlit Cloud](https://share.streamlit.io/).
+3.  **Penggunaan:** Masukkan nama senyawa seperti "Asam Asetat" atau "Etanol" di modul eksplorasi untuk melihat visualisasi 3D gaya Molymod.
+
+Aplikasi ini secara dinamis mengunduh data dari PubChem dan menggunakan pustaka RDKit untuk memproses kimia secara profesional. Presentasi di atas siap ditampilkan untuk menunjukkan profesionalitas proyek ini.
+
+"Slides untuk proyek Tata Penamaan Senyawa Organik Anda telah siap! Silakan tinjau dan beri tahu saya jika ada bagian dari skrip atau desain presentasi yang ingin Anda sesuaikan."
